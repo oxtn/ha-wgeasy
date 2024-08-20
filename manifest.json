@@ -11,7 +11,7 @@
   "homekit": {},
   "iot_class": "local_polling",
   "requirements": [
-    "wg-easy-api-wrapper==1.0.8"
+    "wg-easy-api-wrapper @ git+https://github.com/oxtn/wg-easy-api-wrapper.git"
   ],
   "ssdp": [],
   "zeroconf": []
