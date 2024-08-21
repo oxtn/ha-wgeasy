@@ -41,6 +41,7 @@ class ClientSensor(SwitchEntity):
             "transfer_tx": self._client.transfer_tx,
             "created_at": self._client.created_at,
             "updated_at": self._client.updated_at,
+            "last_handshake_at": self._client.last_handshake_at,
         }
 
         self._attr_device_info = DeviceInfo(
@@ -63,6 +64,7 @@ class ClientSensor(SwitchEntity):
             "transfer_tx": self._client.transfer_tx,
             "created_at": self._client.created_at,
             "updated_at": self._client.updated_at,
+            "last_handshake_at": self._client.last_handshake_at,
         }
 
     async def async_turn_on(self):
