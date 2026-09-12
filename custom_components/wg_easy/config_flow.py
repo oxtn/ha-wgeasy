@@ -8,6 +8,11 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_TOKEN, CONF_URL
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .api import (
     WGEasyApiError,
@@ -15,14 +20,18 @@ from .api import (
     WGEasyNotDetectedError,
     WGEasyV14Client,
     WGEasyV15Client,
+    async_check_v15_admin_credentials,
     async_probe_wg_easy_version,
 )
 from .const import (
     API_VERSION_AUTO,
     API_VERSION_V14,
+    API_VERSION_V15,
     API_VERSIONS,
     CONF_API_VERSION,
     CONF_RESOLVED_API_VERSION,
+    CONF_V15_ADMIN_PASSWORD,
+    CONF_V15_USERNAME,
     CONF_VERIFY_SSL,
     DEFAULT_ONLINE_TIMEOUT_SECONDS,
     DEFAULT_POLL_INTERVAL,
@@ -41,6 +50,9 @@ class WGEasyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._requested_version: str = API_VERSION_AUTO
         self._effective_version: str | None = None
         self._verify_ssl: bool = DEFAULT_VERIFY_SSL
+        # Stored between steps so credentials step can pass them to v15_admin
+        self._token: str | None = None
+        self._password: str | None = None
 
     async def _async_probe(self, url: str, verify_ssl: bool) -> tuple[str | None, dict[str, str]]:
         """Unauthenticated reachability + version probe (no credentials yet).
@@ -86,7 +98,9 @@ class WGEasyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return {"base": "cannot_connect"}
         return {}
 
-    def _build_entry_data(self, token: str | None, password: str | None) -> dict:
+    def _build_entry_data(self, token: str | None, password: str | None,
+                          v15_username: str | None = None,
+                          v15_admin_password: str | None = None) -> dict:
         return {
             CONF_URL: self._url,
             CONF_API_VERSION: self._requested_version,
@@ -97,6 +111,8 @@ class WGEasyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # leftover credential behind in entry.data.
             CONF_TOKEN: token,
             CONF_PASSWORD: password,
+            CONF_V15_USERNAME: v15_username,
+            CONF_V15_ADMIN_PASSWORD: v15_admin_password,
         }
 
     # --- Step 1: address + version + SSL verification --------------------
@@ -167,6 +183,10 @@ class WGEasyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             errors = await self._async_check_credentials(token, password)
             if not errors:
+                self._token = token
+                self._password = password
+                if self._effective_version == API_VERSION_V15:
+                    return await self.async_step_v15_admin()
                 return self.async_create_entry(
                     title="WG Easy", data=self._build_entry_data(token, password)
                 )
@@ -176,6 +196,43 @@ class WGEasyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=self._build_credentials_schema(),
             errors=errors,
             description_placeholders={"api_version": self._effective_version or "?"},
+        )
+
+    async def async_step_v15_admin(self, user_input=None):
+        """Optional step: collect v15 admin credentials for enable/disable support."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            username = (user_input.get(CONF_V15_USERNAME) or "").strip() or None
+            admin_password = user_input.get(CONF_V15_ADMIN_PASSWORD) or None
+
+            # If user left password blank, treat the step as skipped
+            if admin_password:
+                try:
+                    session = async_get_clientsession(self.hass)
+                    await async_check_v15_admin_credentials(
+                        session, self._url, username or "admin",
+                        admin_password, self._verify_ssl,
+                    )
+                except WGEasyAuthError:
+                    errors["base"] = "invalid_auth"
+                except WGEasyApiError:
+                    errors["base"] = "cannot_connect"
+
+            if not errors:
+                return self.async_create_entry(
+                    title="WG Easy",
+                    data=self._build_entry_data(
+                        self._token, self._password,
+                        v15_username=username if admin_password else None,
+                        v15_admin_password=admin_password,
+                    ),
+                )
+
+        return self.async_show_form(
+            step_id="v15_admin",
+            data_schema=self._build_v15_admin_schema(),
+            errors=errors,
         )
 
     async def async_step_reconfigure_credentials(self, user_input=None):
@@ -188,6 +245,10 @@ class WGEasyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             errors = await self._async_check_credentials(token, password)
             if not errors:
+                self._token = token
+                self._password = password
+                if self._effective_version == API_VERSION_V15:
+                    return await self.async_step_reconfigure_v15_admin()
                 return self.async_update_reload_and_abort(
                     entry,
                     unique_id=self._url,
@@ -199,6 +260,44 @@ class WGEasyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=self._build_credentials_schema(entry.data),
             errors=errors,
             description_placeholders={"api_version": self._effective_version or "?"},
+        )
+
+    async def async_step_reconfigure_v15_admin(self, user_input=None):
+        """Optional reconfigure step: update v15 admin credentials."""
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            username = (user_input.get(CONF_V15_USERNAME) or "").strip() or None
+            admin_password = user_input.get(CONF_V15_ADMIN_PASSWORD) or None
+
+            if admin_password:
+                try:
+                    session = async_get_clientsession(self.hass)
+                    await async_check_v15_admin_credentials(
+                        session, self._url, username or "admin",
+                        admin_password, self._verify_ssl,
+                    )
+                except WGEasyAuthError:
+                    errors["base"] = "invalid_auth"
+                except WGEasyApiError:
+                    errors["base"] = "cannot_connect"
+
+            if not errors:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    unique_id=self._url,
+                    data_updates=self._build_entry_data(
+                        self._token, self._password,
+                        v15_username=username if admin_password else None,
+                        v15_admin_password=admin_password,
+                    ),
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure_v15_admin",
+            data_schema=self._build_v15_admin_schema(entry.data),
+            errors=errors,
         )
 
     # --- Schemas ---------------------------------------------------------
@@ -221,12 +320,28 @@ class WGEasyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def _build_credentials_schema(self, data=None):
         data = data or {}
+        _password_selector = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
         if self._effective_version == API_VERSION_V14:
             return vol.Schema(
-                {vol.Required(CONF_PASSWORD, default=data.get(CONF_PASSWORD, "")): str}
+                {vol.Required(CONF_PASSWORD, default=data.get(CONF_PASSWORD, "")): _password_selector}
             )
         return vol.Schema(
-            {vol.Required(CONF_TOKEN, default=data.get(CONF_TOKEN, "")): str}
+            {vol.Required(CONF_TOKEN, default=data.get(CONF_TOKEN, "")): _password_selector}
+        )
+
+    def _build_v15_admin_schema(self, data=None):
+        data = data or {}
+        return vol.Schema(
+            {
+                vol.Optional(
+                    CONF_V15_USERNAME,
+                    default=data.get(CONF_V15_USERNAME, "admin"),
+                ): str,
+                vol.Optional(
+                    CONF_V15_ADMIN_PASSWORD,
+                    default=data.get(CONF_V15_ADMIN_PASSWORD, ""),
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+            }
         )
 
     @staticmethod

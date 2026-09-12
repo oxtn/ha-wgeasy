@@ -28,6 +28,8 @@ class WGEasyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         password: str | None = None,
         verify_ssl: bool = True,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
+        v15_username: str | None = None,
+        v15_admin_password: str | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -44,13 +46,51 @@ class WGEasyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if api_version == API_VERSION_V14:
             self._client = WGEasyV14Client(self.session, url, password, verify_ssl)
         else:
-            self._client = WGEasyV15Client(self.session, url, token, verify_ssl)
+            self._client = WGEasyV15Client(
+                self.session, url, token, verify_ssl,
+                username=v15_username,
+                admin_password=v15_admin_password,
+            )
+        self._v15_has_admin = bool(
+            api_version != API_VERSION_V14
+            and v15_username
+            and v15_admin_password
+        )
 
         self._known_client_keys: set[str] = set()
         self.peer_map: dict[str, dict[str, Any]] = {}
         self._previous_counters: dict[str, tuple[datetime, int, int]] = {}
         self._last_raw_response: bytes | None = None
         self._last_normalized_data: dict[str, Any] | None = None
+
+    @property
+    def supports_toggle(self) -> bool:
+        """True when the v15 client has admin credentials and can enable/disable peers."""
+        return self._v15_has_admin
+
+    async def async_enable_client(self, client_id: str) -> None:
+        """Enable a WireGuard peer and trigger a coordinator refresh."""
+        try:
+            await self._client.async_enable_client(client_id)  # type: ignore[union-attr]
+        except WGEasyAuthError as err:
+            _LOGGER.warning("WG Easy: enable_client auth error: %s", err)
+            raise
+        except WGEasyApiError as err:
+            _LOGGER.warning("WG Easy: enable_client error: %s", err)
+            raise
+        await self.async_request_refresh()
+
+    async def async_disable_client(self, client_id: str) -> None:
+        """Disable a WireGuard peer and trigger a coordinator refresh."""
+        try:
+            await self._client.async_disable_client(client_id)  # type: ignore[union-attr]
+        except WGEasyAuthError as err:
+            _LOGGER.warning("WG Easy: disable_client auth error: %s", err)
+            raise
+        except WGEasyApiError as err:
+            _LOGGER.warning("WG Easy: disable_client error: %s", err)
+            raise
+        await self.async_request_refresh()
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:

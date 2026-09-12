@@ -15,6 +15,9 @@ API_VERSIONS = [API_VERSION_AUTO, API_VERSION_V14, API_VERSION_V15]
 CONF_VERIFY_SSL = "verify_ssl"
 DEFAULT_VERIFY_SSL = True
 
-PLATFORMS = ["sensor", "binary_sensor"]
+PLATFORMS = ["sensor", "binary_sensor", "switch"]
+
+CONF_V15_USERNAME = "v15_username"
+CONF_V15_ADMIN_PASSWORD = "v15_admin_password"
 SERVER_DEVICE_ID = "wireguard_server"
 ENTITY_ID_PREFIX = "wg"

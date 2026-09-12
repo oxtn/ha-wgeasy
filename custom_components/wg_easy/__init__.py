@@ -14,6 +14,8 @@ from .const import (
     CONF_ONLINE_TIMEOUT_MINUTES,
     CONF_ONLINE_TIMEOUT_SECONDS,
     CONF_RESOLVED_API_VERSION,
+    CONF_V15_ADMIN_PASSWORD,
+    CONF_V15_USERNAME,
     CONF_VERIFY_SSL,
     DEFAULT_ONLINE_TIMEOUT_MINUTES,
     DEFAULT_POLL_INTERVAL,
@@ -116,6 +118,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: WGEasyConfigEntry) -> bo
         password=entry.data.get(CONF_PASSWORD),
         verify_ssl=entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
         poll_interval=entry.options.get("poll_interval", DEFAULT_POLL_INTERVAL),
+        v15_username=entry.data.get(CONF_V15_USERNAME),
+        v15_admin_password=entry.data.get(CONF_V15_ADMIN_PASSWORD),
     )
 
     try:

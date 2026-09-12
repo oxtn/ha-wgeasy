@@ -64,15 +64,20 @@ class WGEasyV15Client:
         url: str,
         token: str | None,
         verify_ssl: bool = True,
+        username: str | None = None,
+        admin_password: str | None = None,
     ) -> None:
         self._session = session
-        self._url = self._normalize_url(url)
+        self._base_url = _strip_known_endpoint_suffix(url)
         self._token = token
         self._verify_ssl = verify_ssl
-
-    @staticmethod
-    def _normalize_url(url: str) -> str:
-        return f"{_strip_known_endpoint_suffix(url)}/metrics/json"
+        self._admin_username = username
+        self._admin_password = admin_password
+        self._admin_cookie: str | None = None
+        # Cache: publicKey -> numeric id from GET /api/client (admin API).
+        # Cleared whenever the session cookie is dropped so stale IDs can't
+        # persist across re-logins.
+        self._client_id_cache: dict[str, str] = {}
 
     async def async_fetch_raw(self) -> bytes:
         if not self._token:
@@ -84,7 +89,7 @@ class WGEasyV15Client:
         }
         try:
             async with self._session.get(
-                self._url, headers=headers, ssl=self._verify_ssl
+                f"{self._base_url}/metrics/json", headers=headers, ssl=self._verify_ssl
             ) as response:
                 if response.status == 401:
                     raise WGEasyAuthError("Unauthorized - check API token")
@@ -94,6 +99,135 @@ class WGEasyV15Client:
                 return await response.read()
         except ClientError as err:
             raise WGEasyApiError(f"Request failed: {err}") from err
+
+    async def _async_admin_login(self) -> None:
+        """Login to the wg-easy v15 admin REST API and store the session cookie.
+
+        Uses POST /api/auth/password with {username, password, remember: false}.
+        """
+        if not self._admin_username or not self._admin_password:
+            raise WGEasyApiError(
+                "No admin credentials configured; cannot authenticate to the write API"
+            )
+
+        login_url = f"{self._base_url}/api/auth/password"
+        try:
+            async with self._session.post(
+                login_url,
+                json={
+                    "username": self._admin_username,
+                    "password": self._admin_password,
+                    "remember": False,
+                },
+                ssl=self._verify_ssl,
+            ) as response:
+                if response.status == 401:
+                    raise WGEasyAuthError(
+                        "Admin credentials rejected by wg-easy v15"
+                    )
+                if response.status >= 400:
+                    body = await response.text()
+                    raise WGEasyApiError(
+                        f"Admin login HTTP {response.status}: {body[:200]}"
+                    )
+                # h3/nitro uses a signed cookie named 'wg-easy'
+                cookie = response.cookies.get("wg-easy")
+                if not cookie:
+                    raise WGEasyApiError(
+                        "Admin login succeeded but no session cookie was returned"
+                    )
+                self._admin_cookie = cookie.value
+        except ClientError as err:
+            raise WGEasyApiError(f"Admin login request failed: {err}") from err
+
+    async def _async_admin_post(self, path: str) -> None:
+        """Issue an authenticated admin POST, re-logging in once on 401."""
+        if not self._admin_cookie:
+            await self._async_admin_login()
+
+        url = f"{self._base_url}{path}"
+        cookies = {"wg-easy": self._admin_cookie} if self._admin_cookie else {}
+        try:
+            async with self._session.post(
+                url,
+                cookies=cookies,
+                ssl=self._verify_ssl,
+            ) as response:
+                if response.status == 401:
+                    self._admin_cookie = None
+                    self._client_id_cache.clear()
+                    raise WGEasyAuthError(
+                        "Admin session expired - will re-authenticate next attempt"
+                    )
+                if response.status >= 400:
+                    body = await response.text()
+                    raise WGEasyApiError(
+                        f"Admin POST {path} HTTP {response.status}: {body[:200]}"
+                    )
+        except ClientError as err:
+            raise WGEasyApiError(f"Admin POST request failed: {err}") from err
+
+    async def _async_resolve_client_id(self, public_key: str) -> str:
+        """Resolve a WireGuard peer's numeric database ID from its public key.
+
+        The metrics endpoint used for polling only surfaces ``publicKey``, but
+        the enable/disable REST endpoints require the numeric ``id`` assigned
+        by wg-easy's database. This method calls ``GET /api/client`` (which
+        requires admin session auth) and caches the result so subsequent
+        toggles for the same peer don't need another round-trip.
+        """
+        if public_key in self._client_id_cache:
+            return self._client_id_cache[public_key]
+
+        if not self._admin_cookie:
+            await self._async_admin_login()
+
+        url = f"{self._base_url}/api/client"
+        cookies = {"wg-easy": self._admin_cookie} if self._admin_cookie else {}
+        try:
+            async with self._session.get(
+                url,
+                cookies=cookies,
+                headers={"Accept": "application/json"},
+                ssl=self._verify_ssl,
+            ) as response:
+                if response.status == 401:
+                    self._admin_cookie = None
+                    self._client_id_cache.clear()
+                    raise WGEasyAuthError(
+                        "Admin session expired while fetching client list"
+                    )
+                if response.status >= 400:
+                    body = await response.text()
+                    raise WGEasyApiError(
+                        f"GET /api/client HTTP {response.status}: {body[:200]}"
+                    )
+                clients = await response.json()
+        except ClientError as err:
+            raise WGEasyApiError(f"Failed to fetch client list: {err}") from err
+
+        client_list = clients if isinstance(clients, list) else clients.get("clients", [])
+        for client in client_list:
+            pk = client.get("publicKey")
+            numeric_id = client.get("id")
+            if pk and numeric_id is not None:
+                self._client_id_cache[pk] = str(numeric_id)
+
+        if public_key not in self._client_id_cache:
+            raise WGEasyApiError(
+                f"Client with publicKey {public_key[:8]}... not found in admin API"
+            )
+        return self._client_id_cache[public_key]
+
+    async def async_enable_client(self, public_key: str) -> None:
+        """Enable a WireGuard peer via the v15 admin API."""
+        client_id = await self._async_resolve_client_id(public_key)
+        await self._async_admin_post(f"/api/client/{client_id}/enable")
+
+    async def async_disable_client(self, public_key: str) -> None:
+        """Disable a WireGuard peer via the v15 admin API."""
+        client_id = await self._async_resolve_client_id(public_key)
+        await self._async_admin_post(f"/api/client/{client_id}/disable")
 
 
 class WGEasyV14Client:
@@ -290,3 +424,23 @@ async def async_probe_wg_easy_version(
         "address, or pick the API version manually if you're sure it's "
         "correct."
     )
+
+
+async def async_check_v15_admin_credentials(
+    session: ClientSession,
+    url: str,
+    username: str,
+    password: str,
+    verify_ssl: bool = True,
+) -> None:
+    """Attempt a v15 admin login to validate credentials.
+
+    Raises WGEasyAuthError on bad credentials, WGEasyApiError on
+    connectivity/unexpected errors. Used by the config flow to verify the
+    optional admin username+password before saving them.
+    """
+    client = WGEasyV15Client(
+        session, url, token=None, verify_ssl=verify_ssl,
+        username=username, admin_password=password,
+    )
+    await client._async_admin_login()

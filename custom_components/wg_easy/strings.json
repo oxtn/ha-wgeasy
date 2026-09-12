@@ -16,7 +16,7 @@
       },
       "credentials": {
         "title": "WG Easy – credentials",
-        "description": "Step 2 of 2: detected/selected API version: {api_version}.",
+        "description": "Step 2 of 3: detected/selected API version: {api_version}. (v14 users: no further steps after this.)",
         "data": {
           "token": "API token (v15)",
           "password": "Password (v14)"
@@ -40,7 +40,7 @@
       },
       "reconfigure_credentials": {
         "title": "Reconfigure WG Easy – credentials",
-        "description": "Step 2 of 2: detected/selected API version: {api_version}.",
+        "description": "Step 2 of 3: detected/selected API version: {api_version}.",
         "data": {
           "token": "API token (v15)",
           "password": "Password (v14)"
@@ -48,6 +48,30 @@
         "data_description": {
           "token": "The Bearer Password set under Admin Panel → General → Metrics in the wg-easy web UI. This integration automatically appends /metrics/json to your server address to reach it.",
           "password": "The same password you use to log in to the wg-easy web UI (set via the PASSWORD_HASH environment variable on the wg-easy container)."
+        }
+      },
+      "v15_admin": {
+        "title": "WG Easy – admin credentials (optional)",
+        "description": "Step 3 of 3 (v15 only, optional): provide your wg-easy admin username and password to enable the per-client enable/disable switch. Leave the password blank to skip this step — the switch entities will be created but will show as unavailable until credentials are added via Reconfigure.",
+        "data": {
+          "v15_username": "Admin username",
+          "v15_admin_password": "Admin password"
+        },
+        "data_description": {
+          "v15_username": "The username you log in with in the wg-easy web UI. Defaults to 'admin'.",
+          "v15_admin_password": "Your wg-easy login password. Leave blank to skip — switches will be unavailable until credentials are configured."
+        }
+      },
+      "reconfigure_v15_admin": {
+        "title": "Reconfigure WG Easy – admin credentials (optional)",
+        "description": "Step 3 of 3 (v15 only, optional): update your wg-easy admin credentials for the enable/disable switch. Leave the password blank to clear saved credentials and make switches unavailable.",
+        "data": {
+          "v15_username": "Admin username",
+          "v15_admin_password": "Admin password"
+        },
+        "data_description": {
+          "v15_username": "The username you log in with in the wg-easy web UI. Defaults to 'admin'.",
+          "v15_admin_password": "Your wg-easy login password. Leave blank to clear credentials."
         }
       }
     },
